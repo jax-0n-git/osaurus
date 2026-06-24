@@ -281,12 +281,20 @@ public struct MCPCommand: Command {
     }
 
     // Convert loosely-typed JSON (from JSONSerialization) into MCP.Value
-    private static func toMCPValue(from any: Any?) -> MCP.Value {
+    static func toMCPValue(from any: Any?) -> MCP.Value {
         guard let value = any else { return .null }
         if value is NSNull { return .null }
-        if let b = value as? Bool { return .bool(b) }
-        if let i = value as? Int { return .double(Double(i)) }
-        if let d = value as? Double { return .double(d) }
+        // JSONSerialization decodes every JSON number AND boolean as NSNumber, so
+        // this branch must run before any `as? Bool` / `as? Int` cast: in
+        // Foundation's bridging both `NSNumber(value: 0) as? Bool` and
+        // `NSNumber(value: 1) as? Bool` succeed, so a plain JSON integer 0 or 1
+        // would otherwise be miscast to a boolean and corrupt the proxied tool
+        // schema (e.g. {"minimum": 0} -> {"minimum": false}). Use the CFBoolean
+        // type id to tell a real JSON boolean apart from the integers 0/1.
+        if let n = value as? NSNumber {
+            if CFGetTypeID(n) == CFBooleanGetTypeID() { return .bool(n.boolValue) }
+            return .double(n.doubleValue)
+        }
         if let s = value as? String { return .string(s) }
         if let arr = value as? [Any] {
             return .array(arr.map { toMCPValue(from: $0) })
@@ -297,11 +305,6 @@ public struct MCPCommand: Command {
                 mapped[k] = toMCPValue(from: v)
             }
             return .object(mapped)
-        }
-        // NSNumber (covers both ints and doubles when decoded by JSONSerialization)
-        if let n = value as? NSNumber {
-            if CFNumberGetType(n) == .charType { return .bool(n.boolValue) }
-            return .double(n.doubleValue)
         }
         return .null
     }

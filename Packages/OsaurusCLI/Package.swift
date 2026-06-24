@@ -28,7 +28,10 @@ let package = Package(
         ),
         .testTarget(
             name: "OsaurusCLITests",
-            dependencies: ["OsaurusCLICore"]
+            dependencies: [
+                "OsaurusCLICore",
+                .product(name: "MCP", package: "swift-sdk"),
+            ]
         ),
     ]
 )
