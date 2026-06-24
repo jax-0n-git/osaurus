@@ -492,10 +492,10 @@ public enum SystemPromptTemplates {
             intro = """
                 ## Enabled capabilities
 
-                Enabled for this session. To use a plugin, first load its whole \
-                tool group with capabilities_load using the `plugin/<id>` shown \
-                (e.g. `capabilities_load({"ids": ["plugin/calendar"]})`); ids \
-                beginning `tool/` or `skill/` load individually.
+                Enabled for this session. Load a plugin with capabilities_load \
+                using its `plugin/<id>` (e.g. \
+                `capabilities_load({"ids": ["plugin/calendar"]})`); `tool/` and \
+                `skill/` ids load individually.
                 """
         } else {
             intro = """
