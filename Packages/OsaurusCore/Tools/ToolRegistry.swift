@@ -645,12 +645,28 @@ final class ToolRegistry: ObservableObject {
             // embedding search, shell, network) so the /tmp log can separate
             // tool-execution latency from model decode between agent-loop steps.
             let toolExecStart = CFAbsoluteTimeGetCurrent()
-            PrefillDebugLog.shared.log("       TOOL-EXEC-BEGIN name=\(name)")
+            if PrefillDebugLog.shared.isEnabled {
+                // Capture the (coerced) call arguments so the log shows WHICH
+                // capability a load targeted — e.g. `plugin/calendar` — since
+                // the tool name alone can't. Single-lined and truncated to
+                // bound log size and avoid dumping large tool payloads (file
+                // contents, shell scripts) verbatim into /tmp.
+                let flat = effectiveArgumentsJSON.replacingOccurrences(of: "\n", with: " ")
+                let argsForLog = flat.count > 200 ? String(flat.prefix(200)) + "…" : flat
+                PrefillDebugLog.shared.log("       TOOL-EXEC-BEGIN name=\(name) args=\(argsForLog)")
+            }
+            // Captured for the END line below: the result of a `capabilities_*`
+            // call (which tools a `plugin/<id>` load expanded to, or what a
+            // discover returned). Scoped to capability tools ONLY — other tool
+            // results (file contents, shell/web output) can be large or
+            // sensitive and have no place in this diagnostic.
+            var resultForLog: String? = nil
             defer {
-                PrefillDebugLog.shared.log(
+                var line =
                     "       TOOL-EXEC-END   name=\(name) "
-                        + "ms=\(Int((CFAbsoluteTimeGetCurrent() - toolExecStart) * 1000))"
-                )
+                    + "ms=\(Int((CFAbsoluteTimeGetCurrent() - toolExecStart) * 1000))"
+                if let resultForLog { line += " result=\(resultForLog)" }
+                PrefillDebugLog.shared.log(line)
             }
             // Run the tool body off MainActor so long-running tools (file
             // I/O, network, shell) don't contend with SwiftUI layout on the
@@ -672,7 +688,7 @@ final class ToolRegistry: ObservableObject {
             // relying on each caller to remember. Inert outside combined
             // mode, leaving plain folder + plain sandbox modes untouched.
             let policy = combinedHostReadPolicy
-            return try await ChatExecutionContext.$hostReadOnlyScope.withValue(policy.scope) {
+            let result = try await ChatExecutionContext.$hostReadOnlyScope.withValue(policy.scope) {
                 try await ChatExecutionContext.$allowHostSecretReads.withValue(policy.allowSecretReads) {
                     try await ChatExecutionContext.$sandboxReadBridge.withValue(combinedSandboxReadBridge) {
                         if tool.bypassRegistryTimeout {
@@ -695,6 +711,11 @@ final class ToolRegistry: ObservableObject {
                     }
                 }
             }
+            if PrefillDebugLog.shared.isEnabled, name.hasPrefix("capabilities_") {
+                let flat = result.replacingOccurrences(of: "\n", with: " ")
+                resultForLog = flat.count > 300 ? String(flat.prefix(300)) + "…" : flat
+            }
+            return result
         }
     }
 

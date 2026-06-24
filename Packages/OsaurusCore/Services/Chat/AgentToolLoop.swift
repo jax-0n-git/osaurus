@@ -926,8 +926,14 @@ enum AgentToolLoop {
     /// (registry dispatch is by name), but the rendered tool-schema block
     /// stays frozen until the next compose so the prompt prefix — and the
     /// paged-KV cache built on it — stays byte-stable mid-run.
+    ///
+    /// The anti-rediscovery clause is load-bearing: small models read "not in
+    /// the tool list yet" as "I can't call it" and loop back into
+    /// `capabilities_discover` / a redundant `capabilities_load` (observed on
+    /// gemma-12B after a `plugin/<id>` group load). Stating outright that the
+    /// tools are ready and must NOT be re-discovered cuts that detour.
     static let deferredSchemaNotice =
-        "\nNote: loaded tools are callable NOW — call them by name with JSON arguments. Their full schemas will appear in the tool list from the next user turn."
+        "\nNote: the tools just loaded are callable NOW — invoke them directly by name with JSON arguments. Do NOT call capabilities_discover or capabilities_load for them again; they are already available. Their schemas are omitted from the tool list until the next user turn, but calling them by name works immediately."
 
     /// Stable call-id assignment: preserve the model-supplied id when
     /// present (OpenAI `call_xxx`), otherwise mint one in the same shape.

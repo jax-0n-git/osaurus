@@ -419,14 +419,22 @@ public enum SystemPromptTemplates {
     /// layout. `skills` render before `tools` so the "Skills that govern
     /// tool groups" rule has a visible anchor.
     public struct ManifestPluginGroup: Sendable, Equatable {
+        /// The plugin's tool-group id, used to form the loadable `plugin/<id>`
+        /// in the compact tiered manifest. Empty for synthetic groups that
+        /// have no single loadable group (built-in image tools, the
+        /// standalone-skills bucket); those fall back to listing their
+        /// directly-loadable `tool/`/`skill/` ids inline.
+        public let groupId: String
         public let pluginDisplay: String
         public let skills: [ManifestCapability]
         public let tools: [ManifestCapability]
         public init(
+            groupId: String = "",
             pluginDisplay: String,
             skills: [ManifestCapability],
             tools: [ManifestCapability]
         ) {
+            self.groupId = groupId
             self.pluginDisplay = pluginDisplay
             self.skills = skills
             self.tools = tools
@@ -461,15 +469,91 @@ public enum SystemPromptTemplates {
     ) -> String? {
         guard !groups.isEmpty else { return nil }
 
+        let blocks =
+            compact
+            ? tieredCompactBlocks(groups)
+            : verboseBlocks(groups)
+
+        // The "never deny a listed capability" rule is owned by
+        // `toolGroundingLine` / `groundingDirective` (which co-fire whenever
+        // this section renders), so the intro doesn't restate it. Compact
+        // mode (small-context models) also drops the worked example — the
+        // ids themselves are what stop a small model from denying a
+        // capability, and the example's tokens crowd an 8K window.
+        let intro: String
+        if compact {
+            // Tiered manifest: one `plugin/<id>` line per plugin instead of a
+            // line per tool. A plugin with N tools costs one line, not N, so
+            // the cold first-turn prefill stays bounded as installed plugins
+            // grow — while the model still SEES every plugin (it never has to
+            // guess one exists and `capabilities_discover` for it). Loading
+            // `plugin/<id>` expands the whole group (and runs its governing
+            // skill) in one call.
+            intro = """
+                ## Enabled capabilities
+
+                Enabled for this session. To use a plugin, first load its whole \
+                tool group with capabilities_load using the `plugin/<id>` shown \
+                (e.g. `capabilities_load({"ids": ["plugin/calendar"]})`); ids \
+                beginning `tool/` or `skill/` load individually.
+                """
+        } else {
+            intro = """
+                ## Enabled capabilities
+
+                These capabilities are enabled for this session. Each line begins \
+                with its loadable id; some are already in your tool schema, others \
+                must be loaded first. To load one, call capabilities_load with its \
+                id exactly as shown \
+                (e.g. `capabilities_load({"ids": ["tool/<name>"]})`).
+
+                Worked example — User: "You have a list_messages tool." If \
+                `tool/list_messages` is listed here, confirm it and capabilities_load \
+                it before use.
+                """
+        }
+
+        return intro + "\n\n" + blocks.joined(separator: "\n")
+    }
+
+    /// Compact (small-context model) rendering: one `plugin/<id>` line per
+    /// plugin. The model loads the id to pull in the whole group, so the menu
+    /// stays one line regardless of how many tools a plugin owns. Synthetic
+    /// groups with no loadable group id (built-in image tools, standalone
+    /// skills) keep listing their directly-loadable `tool/`/`skill/` ids
+    /// inline — there is no `plugin/<id>` to expand and they are few.
+    private static func tieredCompactBlocks(
+        _ groups: [ManifestPluginGroup]
+    ) -> [String] {
+        groups.map { group in
+            guard !group.groupId.isEmpty else {
+                var lines = ["<\(group.pluginDisplay)>"]
+                lines.append(contentsOf: group.skills.map { "  skill/\($0.name)" })
+                lines.append(contentsOf: group.tools.map { "  tool/\($0.name)" })
+                return lines.joined(separator: "\n")
+            }
+            // `skill-governed` tells the model to expect tool-ordering
+            // instructions when it loads the group; loading `plugin/<id>`
+            // surfaces them automatically, so it is a hint, not a step.
+            let governed = group.skills.isEmpty ? "" : " — skill-governed"
+            return "plugin/\(group.groupId) — \(group.pluginDisplay)\(governed)"
+        }
+    }
+
+    /// Verbose (large-context model) rendering: a line per tool/skill with
+    /// its one-line description, capped at `enabledManifestToolCap` total
+    /// tool lines before low-priority plugins collapse to a `+N more`
+    /// pointer. Unchanged from the original manifest behavior.
+    private static func verboseBlocks(
+        _ groups: [ManifestPluginGroup]
+    ) -> [String] {
         var blocks: [String] = []
         var renderedToolLines = 0
 
         for group in groups {
             let skillLines = group.skills.map { skill -> String in
                 let desc = skill.description.isEmpty ? "Plugin skill." : skill.description
-                return compact
-                    ? "  skill/\(skill.name)"
-                    : "  skill/\(skill.name) — \(desc)"
+                return "  skill/\(skill.name) — \(desc)"
             }
 
             let remaining = max(enabledManifestToolCap - renderedToolLines, 0)
@@ -491,7 +575,7 @@ public enum SystemPromptTemplates {
 
             let toolLines = toolsToShow.map { tool -> String in
                 let desc = tool.description.isEmpty ? "(no description)" : tool.description
-                return compact ? "  tool/\(tool.name)" : "  tool/\(tool.name) — \(desc)"
+                return "  tool/\(tool.name) — \(desc)"
             }
 
             var lines = ["<plugin: \(group.pluginDisplay)>"]
@@ -504,39 +588,7 @@ public enum SystemPromptTemplates {
             }
             blocks.append(lines.joined(separator: "\n"))
         }
-
-        // The "never deny a listed capability" rule is owned by
-        // `toolGroundingLine` / `groundingDirective` (which co-fire whenever
-        // this section renders), so the intro doesn't restate it. Compact
-        // mode (small-context models) also drops the worked example — the
-        // ids themselves are what stop a small model from denying a
-        // capability, and the example's tokens crowd an 8K window.
-        let intro: String
-        if compact {
-            intro = """
-                ## Enabled capabilities
-
-                Enabled for this session. Each line begins with its loadable \
-                id; load one before use with capabilities_load \
-                (e.g. `capabilities_load({"ids": ["tool/<name>"]})`).
-                """
-        } else {
-            intro = """
-                ## Enabled capabilities
-
-                These capabilities are enabled for this session. Each line begins \
-                with its loadable id; some are already in your tool schema, others \
-                must be loaded first. To load one, call capabilities_load with its \
-                id exactly as shown \
-                (e.g. `capabilities_load({"ids": ["tool/<name>"]})`).
-
-                Worked example — User: "You have a list_messages tool." If \
-                `tool/list_messages` is listed here, confirm it and capabilities_load \
-                it before use.
-                """
-        }
-
-        return intro + "\n\n" + blocks.joined(separator: "\n")
+        return blocks
     }
 
     /// General rule that replaces the per-plugin "Plugin Companions"

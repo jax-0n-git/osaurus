@@ -281,6 +281,15 @@ public struct SystemPromptComposer: Sendable {
                     + "staticPrefixHash=\(manifest.staticPrefixHash(tools: toolset.tools).prefix(16))\n"
                     + manifest.debugDescription
             )
+            // Dump the rendered enabled-capabilities section verbatim so a
+            // single run shows EXACTLY what the model sees (e.g. the tiered
+            // `plugin/<id>` lines) — the token table above can't reveal the
+            // text. Bounded: the manifest itself is capped.
+            if let manifestText = manifest.section("enabledManifest")?.content,
+                !manifestText.isEmpty
+            {
+                PrefillDebugLog.shared.log("---- ENABLED-MANIFEST (rendered)\n\(manifestText)")
+            }
         }
 
         emitToolDiagnostics(
@@ -623,9 +632,10 @@ public struct SystemPromptComposer: Sendable {
         let groups = deriveEnabledManifest(agentId: agentId)
         // `prefersCompactPrompt` already folds the small/tiny-window cases
         // (existing behaviour) and the local-small-model case (large window,
-        // ≤ param ceiling). Compact drops per-capability descriptions + the
-        // worked example — ~14k → <1k tokens here — while keeping every
-        // loadable id, so tool discovery is unaffected.
+        // ≤ param ceiling). Compact tiers the manifest to one `plugin/<id>`
+        // line per plugin (the model loads the id to expand the group) and
+        // drops the worked example — so cold first-turn prefill stays bounded
+        // as installed plugins grow, while every plugin stays visible.
         let compact = ContextSizeResolver.resolve(modelId: snapshot.model).prefersCompactPrompt
         let section = SystemPromptTemplates.enabledCapabilitiesManifest(
             groups: groups,
@@ -1242,6 +1252,7 @@ public struct SystemPromptComposer: Sendable {
         let orderedIds = allGroupIds.sorted()
         var groups = orderedIds.map { groupId in
             SystemPromptTemplates.ManifestPluginGroup(
+                groupId: groupId,
                 pluginDisplay: pluginDisplayName(for: groupId),
                 skills: (skillsByGroup[groupId] ?? []).sorted { $0.name < $1.name },
                 tools: (toolsByGroup[groupId] ?? []).sorted { $0.name < $1.name }
