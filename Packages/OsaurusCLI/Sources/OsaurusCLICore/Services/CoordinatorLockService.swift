@@ -105,6 +105,7 @@ public struct CoordinatorLockService {
 
     @discardableResult
     public func reapExpired(now: Date = Date()) throws -> [CoordinatorLock] {
+        removeUndecodableLockFiles()
         let locks = try list()
         let expired = locks.filter { $0.isExpired(now: now) }
         for lock in expired {
@@ -113,12 +114,43 @@ public struct CoordinatorLockService {
         return expired
     }
 
+    /// Removes lock files whose contents can no longer be decoded (empty,
+    /// truncated, or otherwise corrupt). `list()` silently skips such files, so
+    /// without this pass a single poison file would linger forever and keep
+    /// tripping the decode for every future scan.
+    private func removeUndecodableLockFiles() {
+        guard fileManager.fileExists(atPath: paths.locksDirectory.path),
+            let urls = try? fileManager.contentsOfDirectory(
+                at: paths.locksDirectory,
+                includingPropertiesForKeys: nil
+            )
+        else { return }
+        for url in urls where url.pathExtension == "json" {
+            // `loadLock` yields a value for a valid file and nil for an
+            // undecodable one; it throws only on a genuine read error, which we
+            // leave alone. (`try?` can't tell a nil return from a throw, so use
+            // do/catch.)
+            let loaded: CoordinatorLock?
+            do {
+                loaded = try loadLock(at: url)
+            } catch {
+                continue
+            }
+            if loaded == nil {
+                try? fileManager.removeItem(at: url)
+            }
+        }
+    }
+
     private func loadLock(at url: URL) throws -> CoordinatorLock? {
         guard fileManager.fileExists(atPath: url.path) else { return nil }
         let data = try Data(contentsOf: url)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode(CoordinatorLock.self, from: data)
+        // Treat an undecodable (corrupt/truncated) lock file as absent rather
+        // than letting one bad file abort list()/reapExpired()/status for every
+        // resource.
+        return try? decoder.decode(CoordinatorLock.self, from: data)
     }
 
     private func encoded(_ lock: CoordinatorLock) throws -> Data {
