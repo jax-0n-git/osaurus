@@ -71,6 +71,22 @@ struct MCPBundleManifest: Codable {
             let command: String
             let args: [String]
             let env: [String: String]?
+
+            enum CodingKeys: String, CodingKey {
+                case command
+                case args
+                case env
+            }
+
+            // Default a missing `args` to `[]`, matching `EntryPoint` above so the
+            // two interchangeable formats behave the same. Without this a valid
+            // desktop manifest whose command takes no arguments fails to decode.
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                command = try container.decode(String.self, forKey: .command)
+                args = try container.decodeIfPresent([String].self, forKey: .args) ?? []
+                env = try container.decodeIfPresent([String: String].self, forKey: .env)
+            }
         }
     }
 
