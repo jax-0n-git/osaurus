@@ -15,6 +15,8 @@ public struct ServeCommand: Command {
         var desiredPort: Int? = nil
         var expose: Bool = false
         var assumeYes: Bool = false
+        var supervise: Bool = false
+        var probeInterval: TimeInterval = 15.0
         var i = 0
         while i < args.count {
             let a = args[i]
@@ -29,6 +31,14 @@ public struct ServeCommand: Command {
             } else if a == "--yes" || a == "-y" {
                 assumeYes = true
                 i += 1
+                continue
+            } else if a == "--supervise" {
+                supervise = true
+                i += 1
+                continue
+            } else if a == "--interval", i + 1 < args.count {
+                if let n = Double(args[i + 1]), n > 0 { probeInterval = n }
+                i += 2
                 continue
             }
             i += 1
@@ -55,14 +65,40 @@ public struct ServeCommand: Command {
             }
         }
 
-        // Launch the app if not running, then post local-only distributed notification to start
-        await AppControl.launchAppIfNeeded()
         let buildInfo: () -> [AnyHashable: Any] = {
             var info: [AnyHashable: Any] = [:]
             if let p = desiredPort { info["port"] = p }
             if expose { info["expose"] = true }
             return info
         }
+
+        // Supervise mode: keep the server alive indefinitely instead of a
+        // one-shot start. Probes /health and relaunches the app whenever it is
+        // down. Intended to run under a launchd KeepAlive LaunchAgent so the
+        // server (and its in-app scheduler) survives quit/crash/logout/reboot.
+        if supervise {
+            let serveDesiredPort = desiredPort
+            let serveExpose = expose
+            let supervisor = ServerSupervisor(
+                port: desiredPort ?? (Configuration.resolveConfiguredPort() ?? 1337),
+                probeInterval: probeInterval,
+                ensureServing: {
+                    await AppControl.launchAppIfNeeded()
+                    var info: [AnyHashable: Any] = [:]
+                    if let p = serveDesiredPort { info["port"] = p }
+                    if serveExpose { info["expose"] = true }
+                    AppControl.postDistributedNotification(
+                        name: "com.dinoki.osaurus.control.serve",
+                        userInfo: info
+                    )
+                }
+            )
+            await supervisor.run()
+            return
+        }
+
+        // Launch the app if not running, then post local-only distributed notification to start
+        await AppControl.launchAppIfNeeded()
         AppControl.postDistributedNotification(
             name: "com.dinoki.osaurus.control.serve",
             userInfo: buildInfo()

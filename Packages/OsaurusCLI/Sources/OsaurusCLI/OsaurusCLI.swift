@@ -105,9 +105,13 @@ struct OsaurusCLI {
             osaurus - CLI for Osaurus
 
             Usage:
-              osaurus serve [--port N] [--expose] [--yes|-y]
+              osaurus serve [--port N] [--expose] [--yes|-y] [--supervise] [--interval N]
                                       Start the server (default: localhost only). If --expose
                                       is set, a warning prompt will appear unless --yes is provided.
+                                      With --supervise, run a long-lived keep-alive loop that
+                                      relaunches the server whenever it goes down (probe every
+                                      --interval seconds, default 15) — intended to run under a
+                                      launchd KeepAlive LaunchAgent so the server survives quit.
               osaurus stop            Stop the server
               osaurus mcp [--access-key KEY]
                                       Run MCP stdio server proxying to local HTTP. When
