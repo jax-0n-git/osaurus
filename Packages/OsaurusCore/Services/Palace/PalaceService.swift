@@ -115,7 +115,15 @@ public actor PalaceService {
             createdAt: PalaceDatabase.iso8601Now(),
             metadataJSON: metadataJSON
         )
-        try db.insertDrawer(drawer)
+        // The pre-check above is the fast path; the DB `UNIQUE(wing_id,
+        // room_id, content_hash)` is the authority. If insert reports a
+        // conflict (an identical drawer landed between the check and here),
+        // return the winner as a dedup rather than a phantom id.
+        guard try db.insertDrawer(drawer) else {
+            let winner =
+                try db.findDrawer(wingId: wing.id, roomId: room.id, contentHash: hash) ?? drawer
+            return AddResult(drawer: winner, deduped: true, embedded: false)
+        }
 
         let embedded = await embedBestEffort(drawerId: drawer.id, content: content, config: config)
         return AddResult(drawer: drawer, deduped: false, embedded: embedded)

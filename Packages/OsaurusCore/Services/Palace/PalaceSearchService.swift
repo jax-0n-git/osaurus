@@ -116,8 +116,9 @@ public enum PalaceSearchService {
 
     /// Brute-force cosine ranking. `maxDistance` uses cosine distance
     /// (1 - similarity); 2.0 admits everything. Dimension-mismatched
-    /// candidates (stale model) score 0 and are naturally filtered by any
-    /// maxDistance < 1.
+    /// candidates (stale rows from a different embedding model) are
+    /// excluded outright before scoring — see the inline note on why a
+    /// 0 score is NOT safe to rely on under the default maxDistance.
     static func rank(
         queryVector: [Float],
         candidates: [PalaceDatabase.EmbeddingRow],

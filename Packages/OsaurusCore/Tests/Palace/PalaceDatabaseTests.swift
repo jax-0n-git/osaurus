@@ -95,6 +95,45 @@ struct PalaceDatabaseTests {
         #expect(miss == nil)
     }
 
+    @Test func insertDrawer_uniqueConstraint_dedupsAtDBLevel() throws {
+        let db = try makeDB()
+        let wing = try db.ensureWing(name: "w")
+        let room = try db.ensureRoom(wingId: wing.id, name: "r")
+        let content = "identical verbatim content"
+        let hash = PalaceDatabase.contentHash(content)
+
+        func drawer() -> PalaceDrawer {
+            // Distinct ids — the dedup key is (wing, room, content_hash).
+            PalaceDrawer(
+                wingId: wing.id,
+                roomId: room.id,
+                content: content,
+                contentHash: hash,
+                createdAt: "2026-07-03T00:00:00Z"
+            )
+        }
+
+        #expect(try db.insertDrawer(drawer()) == true)
+        // Second identical-content insert collides with the UNIQUE
+        // constraint → ON CONFLICT DO NOTHING → returns false, no new row.
+        #expect(try db.insertDrawer(drawer()) == false)
+        #expect(try db.countDrawers() == 1)
+        // FTS mirror stayed consistent (trigger only fires on real insert).
+        #expect(try db.ftsSearch(query: "verbatim", wingId: nil, roomId: nil, limit: 10).count == 1)
+
+        // Same content in a DIFFERENT room is a distinct drawer.
+        let room2 = try db.ensureRoom(wingId: wing.id, name: "r2")
+        let other = PalaceDrawer(
+            wingId: wing.id,
+            roomId: room2.id,
+            content: content,
+            contentHash: hash,
+            createdAt: "2026-07-03T00:00:00Z"
+        )
+        #expect(try db.insertDrawer(other) == true)
+        #expect(try db.countDrawers() == 2)
+    }
+
     @Test func updateDrawer_rewritesContentAndHash() throws {
         let db = try makeDB()
         let drawer = try addDrawer(db, content: "before")

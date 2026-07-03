@@ -268,4 +268,50 @@ struct PalaceToolsIntegrationTests {
             #expect(try db.loadEmbeddings(wingId: nil, roomId: nil).isEmpty)
         }
     }
+
+    /// Concurrent identical adds collapse to exactly one drawer, and every
+    /// caller gets that same drawer id — the actor serializes the check +
+    /// insert, and the DB UNIQUE constraint is the authority behind it.
+    @Test func concurrent_identical_adds_collapse_to_one_drawer() async throws {
+        try await StoragePathsTestLock.shared.run {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("palace-race-\(UUID().uuidString)", isDirectory: true)
+            let previousRoot = OsaurusPaths.overrideRoot
+            OsaurusPaths.overrideRoot = root
+            PalaceConfigurationStore.invalidateCache()
+            var config = PalaceConfiguration()
+            config.enabled = true
+            config.embeddingBackend = "none"  // FTS-only; no model needed
+            PalaceConfigurationStore.save(config)
+            defer {
+                OsaurusPaths.overrideRoot = previousRoot
+                PalaceConfigurationStore.invalidateCache()
+                try? FileManager.default.removeItem(at: root)
+            }
+
+            let db = PalaceDatabase()
+            try db.openInMemory()
+            let service = PalaceService(db: db, embedder: nil)
+
+            let results = try await withThrowingTaskGroup(of: String.self) { group in
+                for _ in 0 ..< 24 {
+                    group.addTask {
+                        let r = try await service.addDrawer(
+                            content: "the exact same verbatim line",
+                            wing: "race",
+                            room: "general"
+                        )
+                        return r.drawer.id
+                    }
+                }
+                var ids: [String] = []
+                for try await id in group { ids.append(id) }
+                return ids
+            }
+
+            #expect(results.count == 24)
+            #expect(Set(results).count == 1)  // all callers saw the same winner
+            #expect(try db.countDrawers() == 1)
+        }
+    }
 }

@@ -238,7 +238,14 @@ public final class PalaceDatabase: @unchecked Sendable {
                     content_hash       TEXT NOT NULL,
                     char_offset        INTEGER,
                     created_at         TEXT NOT NULL,
-                    metadata_json      TEXT
+                    metadata_json      TEXT,
+                    -- Dedup invariant is DB-enforced, not just app-level: the
+                    -- verbatim-drawer contract is "one row per exact content
+                    -- within a (wing, room)". Matches the UNIQUE on wings/rooms
+                    -- so the write path can't double-insert under a future
+                    -- refactor that adds a suspension point between the
+                    -- app-level check and the insert.
+                    UNIQUE(wing_id, room_id, content_hash)
                 )
             """
         )
@@ -463,14 +470,23 @@ public final class PalaceDatabase: @unchecked Sendable {
         .map { "d.\($0.trimmingCharacters(in: .whitespaces))" }
         .joined(separator: ", ")
 
-    public func insertDrawer(_ drawer: PalaceDrawer) throws {
-        try executeUpdate(
+    /// Insert a drawer. Returns `true` when a row was written, `false` when
+    /// it collided with the `UNIQUE(wing_id, room_id, content_hash)`
+    /// invariant (an identical drawer already exists — `ON CONFLICT DO
+    /// NOTHING` no-ops, and the FTS trigger only fires on a real insert, so
+    /// the mirror stays consistent). Callers that pre-checked with
+    /// `findDrawer` treat a `false` here as "lost a race, re-fetch the
+    /// winner".
+    @discardableResult
+    public func insertDrawer(_ drawer: PalaceDrawer) throws -> Bool {
+        let changes = try executeUpdateCountingChanges(
             """
             INSERT INTO palace_drawers
                 (id, wing_id, room_id, content, blob_ref, source_file,
                  source_line_start, source_line_end, added_by, content_hash,
                  char_offset, created_at, metadata_json)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            ON CONFLICT(wing_id, room_id, content_hash) DO NOTHING
             """
         ) { stmt in
             Self.bindText(stmt, index: 1, value: drawer.id)
@@ -487,6 +503,7 @@ public final class PalaceDatabase: @unchecked Sendable {
             Self.bindText(stmt, index: 12, value: drawer.createdAt)
             Self.bindText(stmt, index: 13, value: drawer.metadataJSON)
         }
+        return changes > 0
     }
 
     public func getDrawer(id: String) throws -> PalaceDrawer? {
