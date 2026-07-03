@@ -2934,6 +2934,8 @@ A three-lens adversarial review (correctness / integration / spec) ran against t
 
 Plus two hygiene tweaks: `deleteDrawer` gained the file-standard `dispatchPrecondition(.notOnQueue)`, and the maintenance reopener reuses the recorded open path so a test-path database is never reopened at the production path. Each fix has a matching regression test.
 
+A second close-out audit pass (Coder/SRE/independent-verifier) confirmed the above and surfaced one more: **drawer dedup had no DB-level `UNIQUE` constraint** (wings/rooms did) — only an app-level check-then-insert. Not currently exploitable (the `PalaceService` actor runs find→insert synchronously; first `await` is after the insert), but an invariant asymmetry a future suspension-point refactor would make live. Closed by adding `UNIQUE(wing_id, room_id, content_hash)` to schema v1 (zero migration — nothing deployed), `insertDrawer` `ON CONFLICT DO NOTHING`→Bool, and a service-level lost-race re-fetch, with DB-level + concurrent-collapse tests.
+
 ## Known deferrals (explicit, not forgotten)
 
 - **MCP surface** (spec: "MCP: osaurus mcp exposes palace tools when enabled") — Phase 1. Verified: `GET /mcp/tools` (HTTPHandler.swift:9284) lists every globally-enabled registry tool and does NOT consult the composer strip — `db_*` tools appear there even with `dbEnabled=false` on every agent, so palace matches existing precedent. The execute-level flag check is the actual boundary on the `/mcp/call` path (which runs with no agent context).
