@@ -51,11 +51,18 @@ public enum StorageDatabaseCatalog {
             // shared storage key, so it must be rekeyed alongside the core
             // databases on rotation and included in plaintext export.
             .init(label: "router billing", path: OsaurusPaths.billingLedgerDatabaseFile().path),
-            // Palace verbatim-memory archive. Feature-flagged (default off),
-            // but listed unconditionally like the other core databases so
-            // rekey/export/maintenance find it whenever the file exists.
-            .init(label: "palace", path: OsaurusPaths.palaceDatabaseFile().path),
         ]
+        // Palace verbatim-memory archive. Feature-flagged (default off) and
+        // created lazily on first use, so unlike the always-created core
+        // databases above it may legitimately not exist — and
+        // `StorageExportService.rekeyDatabase` has no missing-file guard
+        // (sqlite3_open on the absent palace/ directory fails and would
+        // abort rotation mid-loop). Guard on existence like the
+        // plugin/agent discovery below.
+        let palacePath = OsaurusPaths.palaceDatabaseFile().path
+        if FileManager.default.fileExists(atPath: palacePath) {
+            targets.append(.init(label: "palace", path: palacePath))
+        }
         // Plugin DBs — one per installed plugin. We can discover them
         // by walking `Tools/<pluginId>/data/data.db`.
         let toolsDir = OsaurusPaths.tools()

@@ -51,6 +51,23 @@ struct PalaceSearchServiceTests {
         #expect(!rankedAll.map(\.drawerId).contains("far"))
     }
 
+    /// Stale rows from a different embedding model (wrong dimension) are
+    /// excluded outright — a zero score would pass the default maxDistance
+    /// and the junk hits would suppress the FTS fallback.
+    @Test func rank_excludesDimensionMismatchedCandidates() {
+        let candidates: [PalaceDatabase.EmbeddingRow] = [
+            .init(drawerId: "stale-256d", model: "old", vector: [1, 0, 0]),
+            .init(drawerId: "current", model: "new", vector: [1, 0]),
+        ]
+        let ranked = PalaceSearchService.rank(
+            queryVector: [1, 0],
+            candidates: candidates,
+            limit: 10,
+            maxDistance: 2.0  // admits everything that gets scored
+        )
+        #expect(ranked.map(\.drawerId) == ["current"])
+    }
+
     @Test func search_fallsBackToFTS_whenBackendNone() async throws {
         let db = PalaceDatabase()
         try db.openInMemory()

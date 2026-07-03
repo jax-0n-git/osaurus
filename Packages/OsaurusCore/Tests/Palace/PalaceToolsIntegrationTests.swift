@@ -11,6 +11,7 @@
 
 import Foundation
 import Testing
+import os
 
 @testable import OsaurusCore
 
@@ -189,6 +190,82 @@ struct PalaceToolsIntegrationTests {
             #expect(
                 !FileManager.default.fileExists(atPath: OsaurusPaths.memoryDatabaseFile().path)
             )
+        }
+    }
+
+    /// The storage catalog must list palace.sqlite only when it exists:
+    /// `StorageExportService.rekeyDatabase` has no missing-file guard, so an
+    /// unconditional entry would abort key rotation for every default
+    /// (palace-disabled) install with at-rest encryption enabled.
+    @Test func catalog_lists_palace_only_when_file_exists() async throws {
+        try await StoragePathsTestLock.shared.run {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("palace-catalog-\(UUID().uuidString)", isDirectory: true)
+            let previousRoot = OsaurusPaths.overrideRoot
+            OsaurusPaths.overrideRoot = root
+            defer {
+                OsaurusPaths.overrideRoot = previousRoot
+                try? FileManager.default.removeItem(at: root)
+            }
+
+            let before = StorageDatabaseCatalog.databaseTargets()
+            #expect(!before.contains { $0.label == "palace" })
+
+            let dbURL = OsaurusPaths.palaceDatabaseFile()
+            try OsaurusPaths.ensureExists(dbURL.deletingLastPathComponent())
+            try Data().write(to: dbURL)
+            let after = StorageDatabaseCatalog.databaseTargets()
+            #expect(after.contains { $0.label == "palace" })
+        }
+    }
+
+    /// Updating a drawer whose re-embed fails must DROP the old vector —
+    /// a stale embedding would keep answering semantic queries with the
+    /// drawer's previous meaning.
+    @Test func update_dropsStaleEmbedding_whenReembedFails() async throws {
+        try await StoragePathsTestLock.shared.run {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("palace-stale-embed-\(UUID().uuidString)", isDirectory: true)
+            let previousRoot = OsaurusPaths.overrideRoot
+            OsaurusPaths.overrideRoot = root
+            PalaceConfigurationStore.invalidateCache()
+            var config = PalaceConfiguration()
+            config.enabled = true
+            config.embeddingBackend = "mlx"  // embedder IS invoked
+            PalaceConfigurationStore.save(config)
+            defer {
+                OsaurusPaths.overrideRoot = previousRoot
+                PalaceConfigurationStore.invalidateCache()
+                try? FileManager.default.removeItem(at: root)
+            }
+
+            struct FakeEmbedderFailure: Error {}
+            let calls = OSAllocatedUnfairLock(initialState: 0)
+            let db = PalaceDatabase()
+            try db.openInMemory()
+            let service = PalaceService(
+                db: db,
+                embedder: { texts in
+                    let call = calls.withLock { count -> Int in
+                        count += 1
+                        return count
+                    }
+                    guard call == 1 else { throw FakeEmbedderFailure() }
+                    return texts.map { _ in [0.1, 0.2] }
+                }
+            )
+
+            let added = try await service.addDrawer(
+                content: "cats purr when content",
+                wing: nil,
+                room: nil
+            )
+            #expect(added.embedded)
+            #expect(try db.loadEmbeddings(wingId: nil, roomId: nil).count == 1)
+
+            // Second embed call throws → the OLD vector must be gone.
+            _ = try await service.updateDrawer(id: added.drawer.id, content: "2026 tax notes")
+            #expect(try db.loadEmbeddings(wingId: nil, roomId: nil).isEmpty)
         }
     }
 }

@@ -169,6 +169,20 @@ struct PalaceDatabaseTests {
         #expect(hits.count == 1)
     }
 
+    /// A model-hallucinated pagination value must not crash the app:
+    /// `Int32(_: Int)` traps above Int32.max, so offset binds as int64.
+    @Test func listDrawers_hugeOffset_doesNotTrap() throws {
+        let db = try makeDB()
+        try addDrawer(db, content: "only drawer")
+        let drawers = try db.listDrawers(
+            wingId: nil,
+            roomId: nil,
+            limit: 10,
+            offset: 3_000_000_000
+        )
+        #expect(drawers.isEmpty)
+    }
+
     @Test func ftsQuote_scrubsOperatorsAndQuotesTokens() {
         #expect(PalaceDatabase.ftsQuote("hello world") == "\"hello\" \"world\"")
         #expect(PalaceDatabase.ftsQuote("a AND (b OR c)") == "\"a\" \"AND\" \"b\" \"OR\" \"c\"")

@@ -87,24 +87,61 @@ public enum PalaceConfigurationStore: Sendable {
         return e
     }()
 
-    private static let lock = OSAllocatedUnfairLock<PalaceConfiguration?>(initialState: nil)
+    /// Cache entry keyed on the file's modification date so hand-edits to
+    /// palace.json — the only enable/disable mechanism until a Settings UI
+    /// ships — take effect on the next load() instead of requiring an app
+    /// restart. `pendingWrite` marks a value cached by save() whose async
+    /// disk write may not have landed yet; the next load adopts the file's
+    /// mtime once it's visible.
+    private struct Cached {
+        let config: PalaceConfiguration
+        let fileModificationDate: Date?
+        let pendingWrite: Bool
+    }
+
+    private static let lock = OSAllocatedUnfairLock<Cached?>(initialState: nil)
+
+    private static func modificationDate(of url: URL) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+    }
 
     public static func load() -> PalaceConfiguration {
-        if let cached = lock.withLock({ $0 }) { return cached }
-
         let url = OsaurusPaths.palaceConfigFile()
+        let onDisk = modificationDate(of: url)
+
+        if let cached = lock.withLock({ $0 }) {
+            if cached.pendingWrite {
+                // Adopt the file's mtime once the async save has landed so
+                // later hand-edits are detected as a change.
+                lock.withLock {
+                    $0 = Cached(
+                        config: cached.config,
+                        fileModificationDate: onDisk,
+                        pendingWrite: onDisk == nil
+                    )
+                }
+                return cached.config
+            }
+            if let onDisk, cached.fileModificationDate == onDisk {
+                return cached.config
+            }
+        }
+
         // CRITICAL: see RemoteProviderConfigurationStore.load — never
         // auto-save an empty default on missing-file. The 2026-04
         // storage-migration recovery race showed this pattern can
         // permanently destroy user data.
-        guard FileManager.default.fileExists(atPath: url.path) else {
+        guard onDisk != nil else {
+            lock.withLock { $0 = nil }
             return PalaceConfiguration()
         }
         do {
             let data = try Data(contentsOf: url)
             let config = try JSONDecoder().decode(PalaceConfiguration.self, from: data)
             let validated = config.validated()
-            lock.withLock { $0 = validated }
+            lock.withLock {
+                $0 = Cached(config: validated, fileModificationDate: onDisk, pendingWrite: false)
+            }
             return validated
         } catch {
             logger.error("Failed to load palace config: \(error)")
@@ -122,7 +159,9 @@ public enum PalaceConfigurationStore: Sendable {
             // new value immediately; the disk write then lands off the main
             // thread. Tests run against an override root and write
             // synchronously.
-            lock.withLock { $0 = validated }
+            lock.withLock {
+                $0 = Cached(config: validated, fileModificationDate: nil, pendingWrite: true)
+            }
             ConfigDiskWriter.write(
                 data,
                 to: url,

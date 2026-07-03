@@ -134,6 +134,11 @@ public actor PalaceService {
         guard try db.updateDrawerContent(id: id, content: content) else {
             throw PalaceServiceError.drawerNotFound(id)
         }
+        // Drop the OLD content's vector before best-effort re-embedding: if
+        // the re-embed fails (model missing), a stale vector must not keep
+        // answering semantic queries for meaning the drawer no longer has.
+        // FTS stays correct either way via the update trigger.
+        try? db.deleteEmbedding(drawerId: id)
         _ = await embedBestEffort(drawerId: id, content: content, config: config)
         guard let updated = try db.getDrawer(id: id) else {
             throw PalaceServiceError.drawerNotFound(id)

@@ -125,6 +125,11 @@ public enum PalaceSearchService {
         maxDistance: Double
     ) -> [ScoredId] {
         candidates
+            // Dimension-mismatched vectors (stale rows from a different
+            // embedding model) are excluded outright rather than scored 0 —
+            // a zero score passes the default maxDistance (1.5) and the
+            // junk hits would suppress the FTS fallback entirely.
+            .filter { $0.vector.count == queryVector.count }
             .map { ScoredId(drawerId: $0.drawerId, score: cosineSimilarity(queryVector, $0.vector)) }
             .filter { (1.0 - $0.score) <= maxDistance }
             .sorted { $0.score > $1.score }

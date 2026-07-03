@@ -57,6 +57,11 @@ public final class PalaceDatabase: @unchecked Sendable {
     private var db: OpaquePointer?
     private let queue = DispatchQueue(label: "ai.osaurus.palace.database")
 
+    /// Path this instance was last opened at (guarded by `queue`). The
+    /// maintenance reopener reuses it so a database opened at an explicit
+    /// path (tests) is never silently reopened at the production path.
+    private var openedPath: String?
+
     public var isOpen: Bool {
         queue.sync { db != nil }
     }
@@ -101,6 +106,7 @@ public final class PalaceDatabase: @unchecked Sendable {
                 }
                 throw error
             }
+            openedPath = path
         }
         OsaurusDatabaseHandle.register(maintenanceHandle)
     }
@@ -114,7 +120,11 @@ public final class PalaceDatabase: @unchecked Sendable {
             }
         },
         closer: { [weak self] in self?.close() },
-        reopener: { [weak self] in try? self?.open() }
+        reopener: { [weak self] in
+            guard let self else { return }
+            let path = self.queue.sync { self.openedPath }
+            try? self.open(atPath: path ?? OsaurusPaths.palaceDatabaseFile().path)
+        }
     )
 
     /// Open an in-memory database for testing. **Plaintext.**
@@ -531,7 +541,10 @@ public final class PalaceDatabase: @unchecked Sendable {
                 if let wingId { Self.bindText(stmt, index: 1, value: wingId) }
                 if let roomId { Self.bindText(stmt, index: 2, value: roomId) }
                 sqlite3_bind_int(stmt, 3, Int32(max(1, min(limit, 500))))
-                sqlite3_bind_int(stmt, 4, Int32(max(0, offset)))
+                // int64: `Int32(_: Int)` TRAPS on values > Int32.max, and
+                // offset is model-controlled (a hallucinated pagination
+                // value must not crash the app).
+                sqlite3_bind_int64(stmt, 4, Int64(max(0, offset)))
             },
             process: { stmt in
                 while sqlite3_step(stmt) == SQLITE_ROW {
@@ -560,7 +573,8 @@ public final class PalaceDatabase: @unchecked Sendable {
     /// no drawer matched. The FTS mirror follows via the `ad` trigger.
     @discardableResult
     public func deleteDrawer(id: String) throws -> Bool {
-        try queue.sync {
+        dispatchPrecondition(condition: .notOnQueue(queue))
+        return try queue.sync {
             guard let connection = db else { throw PalaceDatabaseError.notOpen }
             try Self.exec(connection, "BEGIN TRANSACTION")
             do {
@@ -710,6 +724,15 @@ public final class PalaceDatabase: @unchecked Sendable {
                     palaceSQLiteTransient
                 )
             }
+        }
+    }
+
+    /// Remove a drawer's vector. Used when content changes and re-embedding
+    /// fails — a stale vector of the OLD content must not keep answering
+    /// semantic queries for meaning the drawer no longer has.
+    public func deleteEmbedding(drawerId: String) throws {
+        try executeUpdate("DELETE FROM palace_embeddings WHERE drawer_id = ?1") { stmt in
+            Self.bindText(stmt, index: 1, value: drawerId)
         }
     }
 

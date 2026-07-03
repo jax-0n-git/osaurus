@@ -93,4 +93,27 @@ struct PalaceConfigurationTests {
             #expect(OsaurusPaths.palaceConfigFile().path.hasSuffix("config/palace.json"))
         }
     }
+
+    /// Hand-editing palace.json is the only enable/disable mechanism until
+    /// a Settings UI ships — the mtime-keyed cache must pick the edit up
+    /// WITHOUT an app restart (and without a test-only invalidateCache()).
+    @Test func hand_edit_after_cached_load_is_picked_up() async throws {
+        try await withTempRoot {
+            let url = OsaurusPaths.palaceConfigFile()
+            try OsaurusPaths.ensureExists(url.deletingLastPathComponent())
+            try Data(#"{"enabled": true}"#.utf8).write(to: url)
+            #expect(PalaceConfigurationStore.load().enabled == true)
+            // Cached now. Hand-edit the file (bump mtime explicitly so the
+            // test doesn't depend on filesystem timestamp granularity).
+            try Data(#"{"enabled": false}"#.utf8).write(to: url)
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date().addingTimeInterval(2)],
+                ofItemAtPath: url.path
+            )
+            #expect(PalaceConfigurationStore.load().enabled == false)
+            // Deleting the file falls back to the shipped default (disabled).
+            try FileManager.default.removeItem(at: url)
+            #expect(PalaceConfigurationStore.load().enabled == false)
+        }
+    }
 }
