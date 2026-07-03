@@ -232,6 +232,21 @@ public final class ToolRegistry: ObservableObject {
             DBRunViewTool(),
             DBListViewsTool(),
             DBDropViewTool(),
+            // Palace verbatim-memory feature (docs/plans/palace-implementation-plan.md).
+            // Registered as built-ins like db_*; SystemPromptComposer strips
+            // them from the model-visible schema unless the GLOBAL
+            // `palace.json: enabled` flag is true (default false). Each
+            // tool's execute() re-checks the flag so a frozen schema, manual
+            // selection, or a direct /mcp/call can't reach a disabled palace.
+            PalaceStatusTool(),
+            PalaceSearchTool(),
+            PalaceAddDrawerTool(),
+            PalaceGetDrawerTool(),
+            PalaceUpdateDrawerTool(),
+            PalaceDeleteDrawerTool(),
+            PalaceListWingsTool(),
+            PalaceListRoomsTool(),
+            PalaceListDrawersTool(),
             // Self-scheduling + notification (spec §9, §10). Registered as
             // built-ins so the runtime can execute them, but the system
             // prompt composer strips them from the model-visible schema

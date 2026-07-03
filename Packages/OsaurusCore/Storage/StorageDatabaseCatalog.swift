@@ -51,6 +51,10 @@ public enum StorageDatabaseCatalog {
             // shared storage key, so it must be rekeyed alongside the core
             // databases on rotation and included in plaintext export.
             .init(label: "router billing", path: OsaurusPaths.billingLedgerDatabaseFile().path),
+            // Palace verbatim-memory archive. Feature-flagged (default off),
+            // but listed unconditionally like the other core databases so
+            // rekey/export/maintenance find it whenever the file exists.
+            .init(label: "palace", path: OsaurusPaths.palaceDatabaseFile().path),
         ]
         // Plugin DBs — one per installed plugin. We can discover them
         // by walking `Tools/<pluginId>/data/data.db`.
