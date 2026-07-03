@@ -2666,16 +2666,23 @@ In `resolveTools`, immediately BEFORE the `if !isManual {` per-agent gate block 
 
 - [ ] **Step 4: Register in StorageDatabaseCatalog**
 
-In `StorageDatabaseCatalog.databaseTargets()` core list (after the "router billing" entry, line ~53):
+In `StorageDatabaseCatalog.databaseTargets()`, after the core `targets` array literal:
 
 ```swift
-            // Palace verbatim-memory archive. Feature-flagged (default off),
-            // but listed unconditionally like the other core databases so
-            // rekey/export/maintenance find it whenever the file exists.
-            .init(label: "palace", path: OsaurusPaths.palaceDatabaseFile().path),
+        // Palace verbatim-memory archive. Feature-flagged (default off) and
+        // created lazily on first use, so unlike the always-created core
+        // databases above it may legitimately not exist — and
+        // `StorageExportService.rekeyDatabase` has no missing-file guard
+        // (sqlite3_open on the absent palace/ directory fails and would
+        // abort rotation mid-loop). Guard on existence like the
+        // plugin/agent discovery below.
+        let palacePath = OsaurusPaths.palaceDatabaseFile().path
+        if FileManager.default.fileExists(atPath: palacePath) {
+            targets.append(.init(label: "palace", path: palacePath))
+        }
 ```
 
-(Verify while coding: rekey/export helpers already skip nonexistent files — `memory.sqlite` is listed unconditionally and does not exist on installs that never enabled memory-adjacent features. Follow whatever guard they use.)
+**Why existence-guarded (review finding, verified):** the plaintext-export path guards missing files (`exportOneDatabase`, `StorageExportService.swift:259`) but the rekey loop (`performRotation` → `rekeyDatabase`, `StorageExportService.swift:228-236, 322-326`) does a bare `sqlite3_open` and throws on failure — an unconditional palace entry would abort key rotation for every default (palace-disabled) install with at-rest encryption enabled, after the core DBs were already rekeyed but before the new key was installed. The other core DBs are all created at launch, so palace is the only target that can be missing.
 
 - [ ] **Step 5: Build + run the full Palace filter**
 
@@ -2913,6 +2920,19 @@ PR body must include: motivation (verbatim archive vs Memory v2's distillation �
 3. Memory v2 diff audit: `git diff upstream/main -- Packages/OsaurusCore/Services/Memory Packages/OsaurusCore/Storage/MemoryDatabase.swift` → EMPTY.
 4. All new SQL uses numbered placeholders and binds — no string interpolation of user content.
 5. `swift test --filter Palace` + `--filter Memory` + `make test` all green.
+
+## Post-review hardening (applied before PR)
+
+A three-lens adversarial review (correctness / integration / spec) ran against the completed Phase 0 diff; confirmed findings were fixed before the PR:
+
+1. **Key-rotation abort (high):** catalog entry made existence-guarded (see Task 5 Step 4 rationale).
+2. **Int32 offset trap (high):** `listDrawers` binds `offset` via `sqlite3_bind_int64` — a model-hallucinated `{"offset": 3000000000}` used to trap `Int32(_:)` and crash the app.
+3. **Plugin-host schema leak (medium):** `ToolRegistry.alwaysLoadedSpecs` now filters `palaceToolNames` when palace is disabled — `PluginHostAPI.applyAgentTools` builds schemas from `alwaysLoadedSpecs` directly and never runs the composer strip. The composer strip remains as defense in depth.
+4. **Config cache staleness (medium):** `PalaceConfigurationStore` cache is keyed on palace.json's mtime, so hand-edits (the only Phase 0 enable/disable mechanism) take effect without an app restart; `save()` still updates the cache in-process ahead of the async disk write.
+5. **Stale embedding on failed re-embed (medium):** `PalaceService.updateDrawer` drops the old vector before best-effort re-embedding, so a drawer whose re-embed failed can no longer be retrieved by its previous meaning.
+6. **Dimension-mismatch hits (low):** `PalaceSearchService.rank` excludes candidates whose vector dimension differs from the query (stale model rows) instead of scoring them 0 — zero-scores passed the default `maxDistance` and suppressed the FTS fallback.
+
+Plus two hygiene tweaks: `deleteDrawer` gained the file-standard `dispatchPrecondition(.notOnQueue)`, and the maintenance reopener reuses the recorded open path so a test-path database is never reopened at the production path. Each fix has a matching regression test.
 
 ## Known deferrals (explicit, not forgotten)
 
